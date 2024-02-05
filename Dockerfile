@@ -1,2 +1,2 @@
 FROM nginx
-RUN touch bharat1234
+RNewfkwefkn touch bharat1234
