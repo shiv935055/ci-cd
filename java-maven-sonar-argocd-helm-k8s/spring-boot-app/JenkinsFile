@@ -3,12 +3,7 @@ pipeline {
         docker {
             image 'shiv9350/ultimate-cicd:8'
             args '--user root -v /var/run/docker.sock:/var/run/docker.sock'
-            reuseNode true
         }
-    }
-    
-    options {
-        skipDefaultCheckout(true)
     }
     
     stages {
@@ -18,21 +13,10 @@ pipeline {
             }
         }
         
-        stage('Fix Permissions') {
-            steps {
-                sh 'chmod -R 755 . || true'
-            }
-        }
-        
         stage('Build and Test') {
             steps {
                 sh 'ls -ltr'
                 sh 'cd java-maven-sonar-argocd-helm-k8s/spring-boot-app && mvn clean package'
-            }
-            post {
-                always {
-                    sh 'chmod -R 755 java-maven-sonar-argocd-helm-k8s/spring-boot-app/target/ || true'
-                }
             }
         }
         
@@ -62,32 +46,23 @@ pipeline {
         }
         
         stage('Update Deployment File') {
-            environment {
-                GIT_REPO_NAME = "ci-cd"
-                GIT_USER_NAME = "shiv935055"
-            }
             steps {
                 withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
                     script {
                         sh '''
                             git config --global user.email "xyz@gmail.com"
                             git config --global user.name "shiv935055"
+                            git config --global --add safe.directory /var/lib/jenkins/workspace/third-pipeline
                         '''
                         sh """
                             sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
                             git add java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
-                            git commit -m "Update deployment image to version ${BUILD_NUMBER}" || true
-                            git push https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git HEAD:main
+                            git commit -m "Update deployment image to version ${BUILD_NUMBER}"
+                            git push https://${GITHUB_TOKEN}@github.com/shiv935055/ci-cd.git HEAD:main
                         """
                     }
                 }
             }
-        }
-    }
-    
-    post {
-        always {
-            sh 'chmod -R 755 . || true'
         }
     }
 }
