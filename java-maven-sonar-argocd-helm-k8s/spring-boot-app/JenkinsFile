@@ -17,7 +17,7 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                // Checkout code on host (not in container)
+                // Checkout code on host (not inside container)
                 checkout([$class: 'GitSCM',
                           branches: [[name: 'main']],
                           userRemoteConfigs: [[url: 'https://github.com/shiv935055/ci-cd.git']]
@@ -63,7 +63,7 @@ pipeline {
         }
 
         stage('Update Deployment File') {
-            agent any   // run on host agent so Git commands work
+            agent any   // Run on host where Git is available
             steps {
                 withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
                     sh '''
