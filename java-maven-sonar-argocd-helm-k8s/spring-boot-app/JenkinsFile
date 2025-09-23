@@ -3,13 +3,27 @@ pipeline {
         docker {
             image 'shiv9350/ultimate-cicd:8'
             args '--user root -v /var/run/docker.sock:/var/run/docker.sock'
+            reuseNode true
         }
     }
     
+    options {
+        skipDefaultCheckout(true)
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+    
     stages {
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+                sh 'mkdir -p /tmp/workspace && chmod -R 755 /tmp/workspace'
+            }
+        }
+        
         stage('Checkout') {
             steps {
-                checkout scm // Explicitly checkout the code
+                checkout scm
+                sh 'chmod -R 755 . || true'
             }
         }
         
@@ -17,6 +31,11 @@ pipeline {
             steps {
                 sh 'ls -ltr'
                 sh 'cd java-maven-sonar-argocd-helm-k8s/spring-boot-app && mvn clean package'
+            }
+            post {
+                always {
+                    sh 'chmod -R 755 java-maven-sonar-argocd-helm-k8s/spring-boot-app/target/ || true'
+                }
             }
         }
         
@@ -29,19 +48,22 @@ pipeline {
                     sh 'cd java-maven-sonar-argocd-helm-k8s/spring-boot-app && mvn sonar:sonar -Dsonar.login=$SONAR_AUTH_TOKEN -Dsonar.host.url=${SONAR_URL}'
                 }
             }
+            post {
+                always {
+                    sh 'chmod -R 755 . || true'
+                }
+            }
         }
         
         stage('Build and Push Docker Image') {
             environment {
                 DOCKER_IMAGE = "shiv9350/ultimate-cicd-2:${BUILD_NUMBER}"
-                REGISTRY_CREDENTIALS = credentials('docker')
             }
             steps {
                 script {
                     sh 'cd java-maven-sonar-argocd-helm-k8s/spring-boot-app && docker build -t ${DOCKER_IMAGE} .'
-                    def dockerImage = docker.image("${DOCKER_IMAGE}")
-                    docker.withRegistry('https://index.docker.io/v1/', "docker") {
-                        dockerImage.push()
+                    docker.withRegistry('https://index.docker.io/v1/', 'docker') {
+                        docker.image("${DOCKER_IMAGE}").push()
                     }
                 }
             }
@@ -55,26 +77,67 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
                     script {
-                        // Configure git
+                        // Configure git globally
                         sh '''
-                            git config user.email "xyz@gmail.com"
-                            git config user.name "shiv935055"
+                            git config --global user.email "xyz@gmail.com"
+                            git config --global user.name "shiv935055"
                         '''
                         
-                        // Update the deployment file
+                        // Verify git status and fix permissions
+                        sh '''
+                            git status
+                            git remote -v
+                            chmod -R 755 . || true
+                        '''
+                        
+                        // Update the deployment file with better error handling
                         sh """
-                            sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
+                            if [ -f "java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml" ]; then
+                                echo "File exists. Updating image tag..."
+                                sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
+                                echo "File updated successfully"
+                                cat java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml | grep image:
+                            else
+                                echo "ERROR: deployment.yml file not found!"
+                                find . -name "deployment.yml" -type f
+                                exit 1
+                            fi
                         """
                         
-                        // Commit and push changes
+                        // Commit and push changes with better error handling
                         sh """
                             git add java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
-                            git commit -m "Update deployment image to version ${BUILD_NUMBER}"
-                            git push https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME} HEAD:main
+                            
+                            # Check if there are changes to commit
+                            if git diff --cached --quiet; then
+                                echo "No changes to commit"
+                            else
+                                git commit -m "Update deployment image to version ${BUILD_NUMBER}"
+                            fi
+                            
+                            # Pull latest changes before pushing to avoid conflicts
+                            git pull https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git main --rebase --no-edit || true
+                            
+                            # Push changes
+                            git push https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git HEAD:main
                         """
                     }
                 }
             }
+        }
+    }
+    
+    post {
+        always {
+            echo "Pipeline completed - cleaning up"
+            sh 'chmod -R 755 . || true'
+            cleanWs()
+        }
+        success {
+            echo 'Pipeline completed successfully!'
+        }
+        failure {
+            echo 'Pipeline failed! Check the logs above for details.'
         }
     }
 }
