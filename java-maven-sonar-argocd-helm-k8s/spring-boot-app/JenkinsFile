@@ -52,17 +52,35 @@ pipeline {
                         sh '''
                             git config --global user.email "xyz@gmail.com"
                             git config --global user.name "shiv935055"
-                            git config --global --add safe.directory /var/lib/jenkins/workspace/third-pipeline
+                            git config --global --add safe.directory ${WORKSPACE}
+                            # Ensure we're on main branch and have latest changes
+                            git checkout main
+                            git pull origin main
                         '''
                         sh """
                             sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
                             git add java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
                             git commit -m "Update deployment image to version ${BUILD_NUMBER}"
-                            git push https://${GITHUB_TOKEN}@github.com/shiv935055/ci-cd.git HEAD:main
+                            git push https://${GITHUB_TOKEN}@github.com/shiv935055/ci-cd.git main
                         """
                     }
                 }
             }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                // Clean up any Docker images to save disk space
+                sh 'docker system prune -f || true'
+            }
+        }
+        failure {
+            echo 'Pipeline failed! Check the logs for details.'
+        }
+        success {
+            echo 'Pipeline completed successfully!'
         }
     }
 }
