@@ -11,16 +11,19 @@ pipeline {
             steps {
                 checkout([
                     $class: 'GitSCM',
-                    branches: [[name: 'main']],  // Removed the asterisk */
+                    branches: [[name: 'main']],
                     extensions: [
                         [$class: 'CloneOption', depth: 1, noTags: false, shallow: true],
-                        [$class: 'LocalBranch', localBranch: 'main']  // Added this critical line
+                        [$class: 'LocalBranch', localBranch: 'main']
                     ],
                     userRemoteConfigs: [[
                         url: 'https://github.com/shiv935055/ci-cd.git',
-                        credentialsId: 'github-token'  // Added credentials ID
+                        credentialsId: 'github-token'
                     ]]
                 ])
+                
+                // Set safe directory immediately after checkout
+                sh 'git config --global --add safe.directory /var/lib/jenkins/workspace/third-pipeline'
             }
         }
         
@@ -60,25 +63,29 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
                     script {
-                        // First, ensure we're on the main branch and up to date
                         sh '''
                             git config --global user.email "xyz@gmail.com"
                             git config --global user.name "shiv935055"
-                            git checkout main
-                            git pull origin main
+                            git config --global --add safe.directory /var/lib/jenkins/workspace/third-pipeline
+                            git status
+                            git branch -a
                         '''
                         
-                        // Now update the deployment file
                         sh """
-                            sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
-                            git add java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
+                            # Ensure we're on main branch
+                            git checkout main
+                            git pull origin main
                             
-                            # Check if there are changes to commit
-                            if ! git diff --staged --quiet; then
+                            # Update deployment file
+                            sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
+                            
+                            # Check if there are changes
+                            if git diff --quiet java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml; then
+                                echo "No changes detected in deployment file"
+                            else
+                                git add java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
                                 git commit -m "Update deployment image to version ${BUILD_NUMBER}"
                                 git push https://${GITHUB_TOKEN}@github.com/shiv935055/ci-cd.git main:main
-                            else
-                                echo "No changes to commit"
                             fi
                         """
                     }
