@@ -1,68 +1,242 @@
 pipeline {
-	agent {
-    	docker {
-        	image 'shiv9350/ultimate-cicd:8'
-        	args '--user root -v /var/run/docker.sock:/var/run/docker.sock'
-    	}
-	}
+    agent {
+        docker {
+            image 'shiv9350/ultimate-cicd:8'
+            args '--user root -v /var/run/docker.sock:/var/run/docker.sock'
+            reuseNode true
+        }
+    }
     
-	stages {
-    	stage('Checkout') {
-        	steps {
-            	checkout scm
-        	}
-    	}
-   	 
-    	stage('Build and Test') {
-        	steps {
-            	sh 'ls -ltr'
-            	sh 'cd java-maven-sonar-argocd-helm-k8s/spring-boot-app && mvn clean package'
-        	}
-    	}
-   	 
-    	stage('Static Code Analysis') {
-        	environment {
-            	SONAR_URL = "http://3.110.33.155:9000"
-        	}
-        	steps {
-            	withCredentials([string(credentialsId: 'sonar', variable: 'SONAR_AUTH_TOKEN')]) {
-                	sh 'cd java-maven-sonar-argocd-helm-k8s/spring-boot-app && mvn sonar:sonar -Dsonar.login=$SONAR_AUTH_TOKEN -Dsonar.host.url=${SONAR_URL}'
-            	}
-        	}
-    	}
-   	 
-    	stage('Build and Push Docker Image') {
-        	environment {
-            	DOCKER_IMAGE = "shiv9350/ultimate-cicd-2:${BUILD_NUMBER}"
-        	}
-        	steps {
-            	script {
-                	sh 'cd java-maven-sonar-argocd-helm-k8s/spring-boot-app && docker build -t ${DOCKER_IMAGE} .'
-                	docker.withRegistry('https://index.docker.io/v1/', 'docker') {
-                    	docker.image("${DOCKER_IMAGE}").push()
-                	}
-            	}
-        	}
-    	}
-   	 
-    	stage('Update Deployment File') {
-        	steps {
-            	withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
-                	script {
-                    	sh '''
-                        	git config --global user.email "xyz@gmail.com"
-                        	git config --global user.name "shiv935055"
-                        	git config --global --add safe.directory /var/lib/jenkins/workspace/third-pipeline
-                    	'''
-                    	sh """
-                        	sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
-                        	git add java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
-                        	git commit -m "Update deployment image to version ${BUILD_NUMBER}"
-                        	git push https://${GITHUB_TOKEN}@github.com/shiv935055/ci-cd.git HEAD:main
-                    	"""
-                	}
-            	}
-        	}
-    	}
-	}
+    environment {
+        DOCKER_IMAGE = "shiv9350/ultimate-cicd-2:${BUILD_NUMBER}"
+        SONAR_URL = "http://3.110.33.155:9000"
+        GIT_REPO_URL = "https://github.com/shiv935055/ci-cd.git"
+    }
+    
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+        
+        stage('Checkout SCM') {
+            steps {
+                script {
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: '*/main']],
+                        extensions: [
+                            [$class: 'CloneOption', depth: 1, noTags: false, shallow: true],
+                            [$class: 'CleanBeforeCheckout'],
+                            [$class: 'LocalBranch', localBranch: 'main']
+                        ],
+                        userRemoteConfigs: [[
+                            url: 'https://github.com/shiv935055/ci-cd.git',
+                            credentialsId: 'github-token'
+                        ]]
+                    ])
+                }
+            }
+        }
+        
+        stage('Validate Environment') {
+            steps {
+                script {
+                    // Check if required directories exist
+                    dirExists = fileExists 'java-maven-sonar-argocd-helm-k8s/spring-boot-app/pom.xml'
+                    if (!dirExists) {
+                        error "Maven project not found at expected location"
+                    }
+                    
+                    // Check if deployment file exists
+                    deployExists = fileExists 'java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml'
+                    if (!deployExists) {
+                        error "Deployment file not found at expected location"
+                    }
+                }
+            }
+        }
+       
+        stage('Build and Test') {
+            steps {
+                script {
+                    try {
+                        dir('java-maven-sonar-argocd-helm-k8s/spring-boot-app') {
+                            sh '''
+                                echo "Current directory: $(pwd)"
+                                ls -la
+                                mvn clean package -DskipTests=false
+                            '''
+                        }
+                    } catch (Exception e) {
+                        error "Build failed: ${e.getMessage()}"
+                    }
+                }
+            }
+        }
+       
+        stage('Static Code Analysis') {
+            steps {
+                script {
+                    withCredentials([string(credentialsId: 'sonar', variable: 'SONAR_AUTH_TOKEN')]) {
+                        dir('java-maven-sonar-argocd-helm-k8s/spring-boot-app') {
+                            sh """
+                                mvn sonar:sonar \
+                                    -Dsonar.login=${SONAR_AUTH_TOKEN} \
+                                    -Dsonar.host.url=${SONAR_URL} \
+                                    -Dsonar.projectVersion=${BUILD_NUMBER}
+                            """
+                        }
+                    }
+                }
+            }
+        }
+       
+        stage('Build and Push Docker Image') {
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'docker', 
+                                                    usernameVariable: 'DOCKER_USER', 
+                                                    passwordVariable: 'DOCKER_PASS')]) {
+                        dir('java-maven-sonar-argocd-helm-k8s/spring-boot-app') {
+                            sh """
+                                docker build -t ${DOCKER_IMAGE} .
+                                echo ${DOCKER_PASS} | docker login -u ${DOCKER_USER} --password-stdin
+                                docker push ${DOCKER_IMAGE}
+                                docker logout
+                            """
+                        }
+                    }
+                }
+            }
+        }
+       
+        stage('Update Deployment File') {
+            steps {
+                script {
+                    withCredentials([
+                        string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN'),
+                        usernamePassword(credentialsId: 'github-token', 
+                                       usernameVariable: 'GIT_USERNAME', 
+                                       passwordVariable: 'GIT_PASSWORD')
+                    ]) {
+                        // Configure git
+                        sh '''
+                            git config --global user.email "xyz@gmail.com"
+                            git config --global user.name "shiv935055"
+                            git config --global push.default simple
+                        '''
+                        
+                        // Ensure we're on main branch and up to date
+                        sh """
+                            git checkout main
+                            git pull origin main
+                            
+                            # Verify we can modify the file
+                            if [ ! -w "java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml" ]; then
+                                echo "Deployment file is not writable"
+                                exit 1
+                            fi
+                            
+                            # Create backup of original file
+                            cp java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml deployment.yml.backup
+                            
+                            # Update the image tag
+                            sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
+                            
+                            # Verify the change was made
+                            if grep -q "replaceImageTag" java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml; then
+                                echo "ERROR: Image tag replacement failed"
+                                cp deployment.yml.backup java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
+                                exit 1
+                            fi
+                            
+                            # Check if there are actual changes
+                            if git diff --quiet java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml; then
+                                echo "No changes detected in deployment file"
+                            else
+                                # Add and commit only the specific file
+                                git add java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
+                                
+                                # Check if there are staged changes
+                                if git diff --staged --quiet; then
+                                    echo "No staged changes to commit"
+                                else
+                                    git commit -m "CI: Update deployment image to version ${BUILD_NUMBER}"
+                                    
+                                    # Push with retry logic
+                                    n=0
+                                    until [ $n -ge 3 ]
+                                    do
+                                        git push https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/shiv935055/ci-cd.git main:main && break
+                                        n=$((n+1))
+                                        echo "Push attempt $n failed, retrying in 5 seconds..."
+                                        sleep 5
+                                    done
+                                    
+                                    if [ $n -ge 3 ]; then
+                                        echo "Push failed after 3 attempts"
+                                        exit 1
+                                    fi
+                                fi
+                            fi
+                            
+                            # Cleanup backup
+                            rm -f deployment.yml.backup
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    sh '''
+                        echo "Verifying deployment file update..."
+                        git pull origin main
+                        if grep -q "${BUILD_NUMBER}" java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml; then
+                            echo "✓ Deployment file successfully updated to version ${BUILD_NUMBER}"
+                        else
+                            echo "✗ Deployment file update verification failed"
+                            exit 1
+                        fi
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                // Cleanup Docker images to save space
+                sh '''
+                    docker image prune -f || true
+                    docker system prune -f || true
+                '''
+                echo "Build completed with status: ${currentBuild.currentResult}"
+            }
+        }
+        success {
+            echo "Pipeline executed successfully!"
+            slackSend(color: "good", message: "Pipeline SUCCESS: ${env.JOB_NAME} ${env.BUILD_NUMBER}")
+        }
+        failure {
+            echo "Pipeline failed!"
+            slackSend(color: "danger", message: "Pipeline FAILED: ${env.JOB_NAME} ${env.BUILD_NUMBER}")
+        }
+        unstable {
+            echo "Pipeline is unstable!"
+            slackSend(color: "warning", message: "Pipeline UNSTABLE: ${env.JOB_NAME} ${env.BUILD_NUMBER}")
+        }
+    }
+    
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        disableConcurrentBuilds()
+        retry(1)
+    }
 }
