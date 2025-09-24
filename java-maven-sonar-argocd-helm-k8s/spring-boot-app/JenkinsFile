@@ -49,26 +49,16 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
                     script {
-                        // Fresh checkout to ensure clean state
-                        checkout([
-                            $class: 'GitSCM',
-                            branches: [[name: '*/main']],
-                            extensions: [[$class: 'CleanCheckout']],
-                            userRemoteConfigs: [[
-                                url: 'https://github.com/shiv935055/ci-cd.git',
-                                credentialsId: 'github-token'
-                            ]]
-                        ])
-                        
                         sh '''
-                            git config user.email "xyz@gmail.com"
-                            git config user.name "shiv935055"
+                            git config --global user.email "xyz@gmail.com"
+                            git config --global user.name "shiv935055"
+                            git config --global --add safe.directory /var/lib/jenkins/workspace/third-pipeline
                         '''
                         sh """
                             sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
                             git add java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
                             git commit -m "Update deployment image to version ${BUILD_NUMBER}"
-                            git push origin main
+                            git push https://${GITHUB_TOKEN}@github.com/shiv935055/ci-cd.git HEAD:main
                         """
                     }
                 }
